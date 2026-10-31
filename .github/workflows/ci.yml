@@ -1,0 +1,73 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint and format (ruff)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install ruff
+      - run: ruff check .
+      - run: ruff format --check .
+
+  repo-hygiene:
+    name: Repo hygiene (no big files, no checkpoints)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fail on files larger than 5 MB
+        run: |
+          big=$(git ls-files -z | xargs -0 -I{} sh -c 'test -f "{}" && find "{}" -size +5M' || true)
+          if [ -n "$big" ]; then
+            echo "Files larger than 5 MB are not allowed:"
+            echo "$big"
+            exit 1
+          fi
+      - name: Fail on model checkpoints and datasets
+        run: |
+          bad=$(git ls-files | grep -E '\.(pt|pth|ckpt|npz|parquet)$' || true)
+          if [ -n "$bad" ]; then
+            echo "Checkpoints or datasets must not be committed:"
+            echo "$bad"
+            exit 1
+          fi
+
+  tests:
+    name: Tests (CPU, no game)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: Install CPU-only PyTorch
+        run: pip install torch --index-url https://download.pytorch.org/whl/cpu
+      - name: Install dependencies
+        run: pip install -r requirements-dev.txt
+      - name: Run tests (tests that need the game are skipped)
+        run: pytest -m "not game" -q
+
+  lua:
+    name: Lua mod check (luacheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Run luacheck if there are Lua files
+        if: ${{ hashFiles('mod/**/*.lua') != '' }}
+        uses: lunarmodules/luacheck@v1
+        with:
+          args: mod --no-color
